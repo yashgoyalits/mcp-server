@@ -1,15 +1,16 @@
-# ScreenerInsights MCP Server
+# MCP Server
 
-A remote MCP server exposing two read-only tools (`get_available_stocks`,
-`get_latest_quarter_details`) backed by data stored in Cloudflare R2.
+A remote MCP server exposing multiple domain-owned MCP route-servers behind
+one Express app — currently `/screener/mcp` (two read-only tools backed by
+Cloudflare R2) and `/search/mcp` (scaffolded, no tools registered yet).
 
-This is a port of the original Cloudflare Worker version, rebuilt as a
-plain Node.js + Express app so it can run on Render (or any other
-Node/Docker host) instead of Cloudflare's edge runtime.
+This started as a port of a Cloudflare Worker (the original screener-only
+service), then got refactored so new domains can be added as self-contained
+folders instead of growing one shared server file.
 
 - **Protocol**: MCP, spec revision `2025-11-25`, Streamable HTTP transport, **stateless mode**
 - **SDK**: `@modelcontextprotocol/sdk` (official TypeScript SDK)
-- **Storage**: Cloudflare R2, accessed via its S3-compatible API (`@aws-sdk/client-s3`)
+- **Storage**: Cloudflare R2 (screener domain only), accessed via its S3-compatible API (`@aws-sdk/client-s3`)
 
 ---
 
@@ -17,28 +18,43 @@ Node/Docker host) instead of Cloudflare's edge runtime.
 
 ```
 root/
-├── index.ts                        ← entry point: Express app, /mcp route
+├── index.ts                            ← entry point: loops registry.ts, mounts every route
 ├── src/
-│   ├── server/mcpServer.ts         ← McpServer factory + tool registration
-│   ├── tools/
-│   │   ├── getAvailableStocks.ts
-│   │   ├── getLatestQuarterDetails.ts
-│   │   └── index.ts                ← registers tools + Zod schemas on the server
-│   ├── storage/
-│   │   ├── r2Client.ts             ← S3Client configured for R2's endpoint
-│   │   └── r2Helpers.ts            ← key builders + r2Read()
-│   ├── config/env.ts               ← validates required env vars at startup
-│   └── types/stock.ts              ← shared TS interfaces
+│   ├── config/
+│   │   └── env.ts                      ← composes domain env schemas, fails fast once
+│   ├── mcp-server/
+│   │   ├── registry.ts                 ← the ONE file you touch to add a new domain
+│   │   ├── shared/
+│   │   │   ├── corsMiddleware.ts
+│   │   │   └── createMcpRouter.ts      ← reusable POST/GET/DELETE /mcp wiring
+│   │   ├── screener/
+│   │   │   ├── server.ts               ← createScreenerMcpServer()
+│   │   │   ├── env.ts                  ← R2_* schema, owned by this domain
+│   │   │   ├── tools/
+│   │   │   │   ├── getAvailableStocks.ts
+│   │   │   │   ├── getLatestQuarterDetails.ts
+│   │   │   │   └── index.ts            ← registerScreenerTools()
+│   │   │   ├── storage/
+│   │   │   │   ├── r2Client.ts
+│   │   │   │   └── r2Helpers.ts
+│   │   │   └── types/
+│   │   │       └── stock.ts
+│   │   └── search/                     ← scaffold — no tools registered yet
+│   │       ├── server.ts
+│   │       ├── env.ts
+│   │       └── tools/
+│   │           └── index.ts            ← TODO: add real tools here
 ├── package.json
 ├── tsconfig.json
-├── Dockerfile                       ← optional, for platform-agnostic deploys
-├── render.yaml                      ← optional Render Blueprint
+├── Dockerfile                           ← optional, for platform-agnostic deploys
+├── render.yaml                          ← optional Render Blueprint
 └── .env.example
 ```
 
-To add a new tool later: write its logic as a new file under `src/tools/`,
-then register it (name + Zod input schema) in `src/tools/index.ts`. Nothing
-else needs to change.
+To add a new tool to an existing domain: write its logic as a new file under
+that domain's `tools/` folder, then register it in that domain's
+`tools/index.ts`. To add a whole new domain (e.g. `filings`), see
+[section 6](#6-adding-a-new-domain) below — `index.ts` never needs to change.
 
 ---
 
@@ -74,7 +90,9 @@ npm run dev
 You should see:
 
 ```
-ScreenerInsights MCP server listening on port 3000
+MCP servers listening on port 3000
+  /screener/mcp
+  /search/mcp
 ```
 
 ---
@@ -84,26 +102,34 @@ ScreenerInsights MCP server listening on port 3000
 ### A. Quick curl check
 
 ```bash
-# Health check
+# Health check — lists every mounted route
 curl http://localhost:3000/
 
-# MCP handshake
-curl -X POST http://localhost:3000/mcp \
+# MCP handshake (screener domain)
+curl -X POST http://localhost:3000/screener/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
 
-# List tools
-curl -X POST http://localhost:3000/mcp \
+# List tools (screener domain)
+curl -X POST http://localhost:3000/screener/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 
-# Call a tool
-curl -X POST http://localhost:3000/mcp \
+# Call a tool (screener domain)
+curl -X POST http://localhost:3000/screener/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_available_stocks","arguments":{}}}'
+
+# Search domain is mounted too, but has no tools registered yet —
+# tools/list currently returns "Method not found" until a tool is added
+# (see src/mcp-server/search/tools/index.ts).
+curl -X POST http://localhost:3000/search/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
 If `get_available_stocks` returns real stock data, your R2 credentials and
@@ -116,9 +142,10 @@ npx @modelcontextprotocol/inspector
 ```
 
 This opens a browser UI at `http://localhost:6274`. Choose transport type
-**Streamable HTTP**, set the URL to `http://localhost:3000/mcp`, connect,
+**Streamable HTTP**, set the URL to `http://localhost:3000/screener/mcp`
+(or `http://localhost:3000/search/mcp` for the search domain), connect,
 then use the "Tools" tab to list and call tools interactively. This is the
-easiest way to confirm both tools behave correctly before deploying.
+easiest way to confirm tools behave correctly before deploying.
 
 ### C. Type-check / build check
 
@@ -167,8 +194,8 @@ config changes needed.
   fetching JSON from R2), not CPU-bound.
 - **Spins down after 15 min of no traffic.** The next request triggers a
   cold start (~30-60s) before it responds. This is normal — there is no
-  state to lose because the server is stateless and reads everything
-  fresh from R2 on each call.
+  state to lose because every route is stateless and reads everything
+  fresh from R2 (or wherever a future domain's data lives) on each call.
 - **Ephemeral filesystem** — irrelevant here since nothing is written to
   disk.
 
@@ -182,7 +209,7 @@ above:
 ```bash
 curl https://your-app.onrender.com/
 
-curl -X POST https://your-app.onrender.com/mcp \
+curl -X POST https://your-app.onrender.com/screener/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
@@ -191,23 +218,23 @@ curl -X POST https://your-app.onrender.com/mcp \
 - First request after idle time will be slow (cold start) — that's
   expected on the free tier, not a bug.
 - If you get a connection error instead of a slow response, check Render's
-  **Logs** tab — the most common cause is a missing/incorrect R2
-  environment variable (the server fails fast at startup with a clear
-  message listing exactly which one is missing).
+  **Logs** tab — the most common cause is a missing/incorrect env
+  variable (the server fails fast at startup with a clear message listing
+  exactly which one is missing, regardless of which domain it belongs to).
 
 **Connecting a real MCP client to the deployed server:**
 - **MCP Inspector**: same as local testing, but set the URL to
-  `https://your-app.onrender.com/mcp`.
+  `https://your-app.onrender.com/screener/mcp`.
 - **Claude.ai / Claude Desktop**: add it as a custom connector pointing at
-  `https://your-app.onrender.com/mcp` and confirm both tools show up and
-  return real data when called from an actual conversation.
+  `https://your-app.onrender.com/screener/mcp` and confirm the tools show
+  up and return real data when called from an actual conversation.
 
 ### Ongoing checks
 
 - Render's dashboard shows request logs and basic metrics — watch the
-  **Logs** tab after a deploy for the startup line
-  (`ScreenerInsights MCP server listening on port ...`) to confirm it
-  booted correctly.
+  **Logs** tab after a deploy for the startup lines
+  (`MCP servers listening on port ...` followed by each mounted route) to
+  confirm it booted correctly.
 - Because the server validates env vars at startup and fails immediately
   with a descriptive error if something's missing, a service that's
   "deployed but not responding" almost always means: check Logs first.
@@ -221,7 +248,20 @@ bindings, just `process.env` and a port to listen on. To move to Railway,
 Fly.io, Koyeb, or a plain VPS:
 
 - **Without Docker**: set the same build/start commands
-  (`npm install && npm run build` / `npm start`) and the same four env
-  vars on the new platform.
+  (`npm install && npm run build` / `npm start`) and the same env vars on
+  the new platform.
 - **With Docker**: just point the new platform at the included
   `Dockerfile` — it's already self-contained.
+
+---
+
+## 6. Adding a new domain
+
+1. `mkdir -p src/mcp-server/<domain>/tools`
+2. `src/mcp-server/<domain>/server.ts` → `create<Domain>McpServer()`, same shape as screener's.
+3. `src/mcp-server/<domain>/tools/index.ts` → `register<Domain>Tools(server)`.
+4. If it needs secrets: `src/mcp-server/<domain>/env.ts` exporting `<domain>EnvSchema`, then in
+   `src/config/env.ts` add `.merge(<domain>EnvSchema)`.
+5. In `src/mcp-server/registry.ts`: add `{ path: '/<domain>', createServer: create<Domain>McpServer }`.
+
+`index.ts` — **zero changes**, ever.
