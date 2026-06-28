@@ -1,0 +1,21 @@
+# Render Blueprint — optional, but lets you spin this exact service up
+# via "New > Blueprint" in the Render dashboard instead of clicking
+# through settings manually. Secrets are NOT stored here (sync: false
+# means Render will prompt you to paste each value in the dashboard).
+
+services:
+  - type: web
+    name: mcp-server
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
