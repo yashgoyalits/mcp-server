@@ -1,40 +1,18 @@
-import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { getAvailableStocks } from './getAvailableStocks.js';
-import { getLatestQuarterDetails } from './getLatestQuarterDetails.js';
+import { getAvailableStocksTool } from './getAvailableStocks.js';
+import { getLatestQuarterDetailsTool } from './getLatestQuarterDetails.js';
+import type { AnyToolDefinition } from '../../shared/types/toolDefinition.js';
 
-export function registerScreenerTools(server: McpServer): void {
-  server.registerTool(
-    'get_available_stocks',
-    {
-      title: 'Get Available Stocks',
-      description:
-        'Returns the list of all stocks available in the screener database. ' +
-        'Each entry contains the stock name and its screener slug (used as identifier in other tools). ' +
-        'Call this first to discover valid slugs.',
-      inputSchema: {},
-    },
-    async () => getAvailableStocks()
-  );
-
-  server.registerTool(
-    'get_latest_quarter_details',
-    {
-      title: 'Get Latest Quarter Details',
-      description:
-        'Fetches the most recent quarterly insight data for a given stock slug. ' +
-        'Returns the full quarterly JSON stored in R2 — financials, notes, and any _md fields. ' +
-        'Use get_available_stocks() first to resolve a valid slug.',
-      inputSchema: {
-        slug: z
-          .string()
-          .min(1)
-          .describe(
-            'The screener_slug for the stock (e.g. "reliance-industries"). ' +
-              'Must match an entry returned by get_available_stocks.'
-          ),
-      },
-    },
-    async ({ slug }) => getLatestQuarterDetails(slug)
-  );
-}
+/**
+ * This domain's full tool manifest — pure data, no `server.registerTool()`
+ * calls here. The shared registry (mcp-server/shared/toolRegistry.ts)
+ * consumes this list and does all the wiring/error-handling/logging.
+ *
+ * To add a new tool: write its ToolDefinition in its own file (see the two
+ * below for the pattern — use `defineTool` so the handler's argument type
+ * is inferred from inputSchema), then add it to this array. Nothing else
+ * needs to change.
+ */
+export const screenerToolDefinitions: AnyToolDefinition[] = [
+  getAvailableStocksTool,
+  getLatestQuarterDetailsTool,
+];

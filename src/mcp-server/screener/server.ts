@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { registerScreenerTools } from './tools/index.js';
+import { registerToolDefinitions } from '../shared/toolRegistry.js';
+import { screenerToolDefinitions } from './tools/index.js';
 
 export function createScreenerMcpServer(): McpServer {
   const server = new McpServer({
@@ -7,7 +8,7 @@ export function createScreenerMcpServer(): McpServer {
     version: '1.0.0',
   });
 
-  registerScreenerTools(server);
+  registerToolDefinitions(server, screenerToolDefinitions, { domain: 'screener' });
 
   return server;
 }

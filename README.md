@@ -6,7 +6,11 @@ Cloudflare R2) and `/search/mcp` (scaffolded, no tools registered yet).
 
 This started as a port of a Cloudflare Worker (the original screener-only
 service), then got refactored so new domains can be added as self-contained
-folders instead of growing one shared server file.
+folders instead of growing one shared server file. Tool registration itself
+is now **plugin-style**: every tool is a plain data manifest (`ToolDefinition`),
+and one shared registry does all the `server.registerTool()` wiring — see
+[section 7](#7-how-tool-registration-works-toolDefinition--the-shared-registry)
+for the full picture.
 
 - **Protocol**: MCP, spec revision `2025-11-25`, Streamable HTTP transport, **stateless mode**
 - **SDK**: `@modelcontextprotocol/sdk` (official TypeScript SDK)
@@ -18,7 +22,9 @@ folders instead of growing one shared server file.
 
 ```
 root/
-├── index.ts                            ← entry point: loops registry.ts, mounts every route
+├── index.ts                            ← entry point: loops registry.ts, mounts every route,
+│                                          runs the startup tool-name collision check, exposes
+│                                          the tool catalog on GET /
 ├── src/
 │   ├── config/
 │   │   └── env.ts                      ← composes domain env schemas, fails fast once
@@ -26,14 +32,22 @@ root/
 │   │   ├── registry.ts                 ← the ONE file you touch to add a new domain
 │   │   ├── shared/
 │   │   │   ├── corsMiddleware.ts
-│   │   │   └── createMcpRouter.ts      ← reusable POST/GET/DELETE /mcp wiring
+│   │   │   ├── createMcpRouter.ts      ← reusable POST/GET/DELETE /mcp wiring
+│   │   │   ├── toolRegistry.ts         ← registerToolDefinitions() — the ONLY place that
+│   │   │   │                             calls server.registerTool(); handles enable/disable,
+│   │   │   │                             logging, error formatting, deprecation
+│   │   │   ├── toolResult.ts           ← toolText() / toolError() — shared response shapes
+│   │   │   ├── catalog.ts              ← buildToolCatalog() + assertNoToolNameCollisions()
+│   │   │   └── types/
+│   │   │       └── toolDefinition.ts   ← the ToolDefinition contract + defineTool() helper
 │   │   ├── screener/
-│   │   │   ├── server.ts               ← createScreenerMcpServer()
+│   │   │   ├── server.ts               ← createScreenerMcpServer() — just builds McpServer
+│   │   │   │                             + calls registerToolDefinitions()
 │   │   │   ├── env.ts                  ← R2_* schema, owned by this domain
 │   │   │   ├── tools/
-│   │   │   │   ├── getAvailableStocks.ts
-│   │   │   │   ├── getLatestQuarterDetails.ts
-│   │   │   │   └── index.ts            ← registerScreenerTools()
+│   │   │   │   ├── getAvailableStocks.ts        ← exports a ToolDefinition (data + handler)
+│   │   │   │   ├── getLatestQuarterDetails.ts   ← exports a ToolDefinition
+│   │   │   │   └── index.ts            ← just an array: screenerToolDefinitions
 │   │   │   ├── storage/
 │   │   │   │   ├── r2Client.ts
 │   │   │   │   └── r2Helpers.ts
@@ -43,7 +57,7 @@ root/
 │   │       ├── server.ts
 │   │       ├── env.ts
 │   │       └── tools/
-│   │           └── index.ts            ← TODO: add real tools here
+│   │           └── index.ts            ← empty array + a worked example in comments
 ├── package.json
 ├── tsconfig.json
 ├── Dockerfile                           ← optional, for platform-agnostic deploys
@@ -51,10 +65,11 @@ root/
 └── .env.example
 ```
 
-To add a new tool to an existing domain: write its logic as a new file under
-that domain's `tools/` folder, then register it in that domain's
-`tools/index.ts`. To add a whole new domain (e.g. `filings`), see
-[section 6](#6-adding-a-new-domain) below — `index.ts` never needs to change.
+To add a new tool to an existing domain: write a `ToolDefinition` as a new
+file under that domain's `tools/` folder, then add it to the array in that
+domain's `tools/index.ts`. No registration code to write. To add a whole new
+domain (e.g. `filings`), see [section 6](#6-adding-a-new-domain) below —
+`index.ts` never needs to change.
 
 ---
 
@@ -91,8 +106,8 @@ You should see:
 
 ```
 MCP servers listening on port 3000
-  /screener/mcp
-  /search/mcp
+  /screener/mcp (2 tools registered)
+  /search/mcp (0 tools registered)
 ```
 
 ---
@@ -102,7 +117,7 @@ MCP servers listening on port 3000
 ### A. Quick curl check
 
 ```bash
-# Health check — lists every mounted route
+# Health check — lists every mounted route AND the full cross-domain tool catalog
 curl http://localhost:3000/
 
 # MCP handshake (screener domain)
@@ -135,6 +150,12 @@ curl -X POST http://localhost:3000/search/mcp \
 If `get_available_stocks` returns real stock data, your R2 credentials and
 bucket layout are correct end-to-end.
 
+`GET /` now returns a `tools` array alongside `servers` — one entry per tool,
+across every domain, with its `domain`, mounted `route`, `name`, `title`,
+`description`, `deprecated`, and `enabled` (reflecting that tool's
+`isEnabled()` check, if it has one). This is the "catalog" mentioned above —
+useful once there are dozens of tools spread across domains.
+
 ### B. MCP Inspector (recommended — visual, no manual JSON-RPC needed)
 
 ```bash
@@ -154,7 +175,9 @@ npm run build
 ```
 
 This must complete with no errors before deploying — it's exactly what
-Render will run during its build step.
+Render will run during its build step. It also runs the startup
+tool-name-collision check (see section 7) as a side effect of `index.ts`
+being type-checked and, if you actually run the built output, executed.
 
 ---
 
@@ -221,6 +244,7 @@ curl -X POST https://your-app.onrender.com/screener/mcp \
   **Logs** tab — the most common cause is a missing/incorrect env
   variable (the server fails fast at startup with a clear message listing
   exactly which one is missing, regardless of which domain it belongs to).
+  A tool-name collision across domains (see section 7) fails the same way.
 
 **Connecting a real MCP client to the deployed server:**
 - **MCP Inspector**: same as local testing, but set the URL to
@@ -233,11 +257,15 @@ curl -X POST https://your-app.onrender.com/screener/mcp \
 
 - Render's dashboard shows request logs and basic metrics — watch the
   **Logs** tab after a deploy for the startup lines
-  (`MCP servers listening on port ...` followed by each mounted route) to
-  confirm it booted correctly.
+  (`MCP servers listening on port ...` followed by each mounted route and
+  its tool count) to confirm it booted correctly.
 - Because the server validates env vars at startup and fails immediately
   with a descriptive error if something's missing, a service that's
   "deployed but not responding" almost always means: check Logs first.
+- Per-call logs (`[screener] get_available_stocks ok (42ms)`, or `threw
+  after ...` on failure) come from `shared/toolRegistry.ts` and show up for
+  every tool call, across every domain, with no per-tool logging code to
+  maintain.
 
 ---
 
@@ -258,10 +286,94 @@ Fly.io, Koyeb, or a plain VPS:
 ## 6. Adding a new domain
 
 1. `mkdir -p src/mcp-server/<domain>/tools`
-2. `src/mcp-server/<domain>/server.ts` → `create<Domain>McpServer()`, same shape as screener's.
-3. `src/mcp-server/<domain>/tools/index.ts` → `register<Domain>Tools(server)`.
+2. `src/mcp-server/<domain>/server.ts` → `create<Domain>McpServer()`. Same
+   shape as screener's: build an `McpServer`, call
+   `registerToolDefinitions(server, <domain>ToolDefinitions, { domain: '<domain>' })`,
+   return it.
+3. `src/mcp-server/<domain>/tools/index.ts` → export `<domain>ToolDefinitions: AnyToolDefinition[]`
+   (an array, not a registration function — see section 7).
 4. If it needs secrets: `src/mcp-server/<domain>/env.ts` exporting `<domain>EnvSchema`, then in
    `src/config/env.ts` add `.merge(<domain>EnvSchema)`.
-5. In `src/mcp-server/registry.ts`: add `{ path: '/<domain>', createServer: create<Domain>McpServer }`.
+5. In `src/mcp-server/registry.ts`: add
+   `{ path: '/<domain>', domain: '<domain>', createServer: create<Domain>McpServer, toolDefinitions: <domain>ToolDefinitions }`.
 
 `index.ts` — **zero changes**, ever.
+
+---
+
+## 7. How tool registration works: `ToolDefinition` + the shared registry
+
+Tool registration is **plugin-style**: a tool file never calls
+`server.registerTool()` directly. It just exports a `ToolDefinition` — name,
+title, description, Zod input schema, and a handler — and one shared
+function does the actual wiring.
+
+**Defining a tool** (e.g. `screener/tools/getAvailableStocks.ts`):
+
+```ts
+import { defineTool } from '../../shared/types/toolDefinition.js';
+import { toolText, toolError } from '../../shared/toolResult.js';
+
+export const getAvailableStocksTool = defineTool({
+  name: 'get_available_stocks',
+  title: 'Get Available Stocks',
+  description: '...',
+  inputSchema: {}, // or e.g. { slug: z.string().min(1) }
+  handler: async () => {
+    // ... business logic ...
+    return toolText('...'); // or toolError('...') for an expected failure
+  },
+});
+```
+
+`defineTool` is just an identity function used for type inference — it lets
+`handler`'s argument type be inferred from `inputSchema` without spelling
+out the generic by hand.
+
+**Listing tools** (`screener/tools/index.ts`):
+
+```ts
+export const screenerToolDefinitions: AnyToolDefinition[] = [
+  getAvailableStocksTool,
+  getLatestQuarterDetailsTool,
+];
+```
+
+**Registering them** (`screener/server.ts`):
+
+```ts
+registerToolDefinitions(server, screenerToolDefinitions, { domain: 'screener' });
+```
+
+`registerToolDefinitions` (in `shared/toolRegistry.ts`) is the **only**
+place that calls `server.registerTool()`, and it handles everything that
+used to be duplicated per tool:
+
+- **Error formatting** — `toolText()` / `toolError()` (`shared/toolResult.ts`)
+  give every tool the same response shape for expected successes/failures,
+  and any *unexpected* exception thrown by a handler is caught here and
+  turned into a generic error result instead of crashing the request.
+- **Logging/metrics** — every call is timed and logged with its outcome.
+  Swap the two `console.log`/`console.error` lines for a real logger or
+  metrics client later, in one place, with no tool file changes.
+- **Env-based enable/disable** — a tool can set
+  `isEnabled: () => Boolean(process.env.SOME_KEY)`. If it returns false,
+  the tool is skipped (and logged) instead of registered — so an optional
+  integration with a missing API key never crashes the server. See the
+  worked example in `search/tools/index.ts`.
+- **Deprecation** — set `deprecated: true` on a `ToolDefinition` and its
+  description is automatically prefixed with `[DEPRECATED]` everywhere
+  (including the catalog below) — no need to hand-edit the description.
+
+**Cross-domain tooling** (`shared/catalog.ts`):
+
+- `buildToolCatalog(mcpServerRoutes)` flattens every domain's tool list into
+  one array — this is what powers the `tools` field on `GET /`.
+- `assertNoToolNameCollisions(mcpServerRoutes)` runs once at startup (from
+  `index.ts`, before the Express app even starts listening) and throws if
+  any two tools — same domain or different domains — share a `name`. Tool
+  names must be unique across the whole server.
+
+This means: adding a new tool is "write one file exporting a
+`ToolDefinition`, add it to one array" — no boilerplate, and the server
+won't even boot if you accidentally reuse a tool name.

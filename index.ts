@@ -2,7 +2,12 @@ import express, { type Request, type Response } from 'express';
 import { env } from './src/config/env.js';
 import { corsMiddleware } from './src/mcp-server/shared/corsMiddleware.js';
 import { createMcpRouter } from './src/mcp-server/shared/createMcpRouter.js';
+import { assertNoToolNameCollisions, buildToolCatalog } from './src/mcp-server/shared/catalog.js';
 import { mcpServerRoutes } from './src/mcp-server/registry.js';
+
+// Fail fast — same spirit as src/config/env.ts's validation — if two
+// domains ever end up registering a tool with the same name.
+assertNoToolNameCollisions(mcpServerRoutes);
 
 const app = express();
 app.use(express.json());
@@ -12,6 +17,7 @@ app.get('/', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     servers: mcpServerRoutes.map((r) => `${r.path}/mcp`),
+    tools: buildToolCatalog(mcpServerRoutes),
   });
 });
 
@@ -22,6 +28,7 @@ for (const route of mcpServerRoutes) {
 app.listen(env.PORT, () => {
   console.log(`MCP servers listening on port ${env.PORT}`);
   for (const route of mcpServerRoutes) {
-    console.log(`  ${route.path}/mcp`);
+    const total = route.toolDefinitions.length;
+    console.log(`  ${route.path}/mcp (${total} tool${total === 1 ? '' : 's'} registered)`);
   }
 });

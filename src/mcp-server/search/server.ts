@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { registerSearchTools } from './tools/index.js';
+import { registerToolDefinitions } from '../shared/toolRegistry.js';
+import { searchToolDefinitions } from './tools/index.js';
 
 export function createSearchMcpServer(): McpServer {
   const server = new McpServer({
@@ -7,7 +8,7 @@ export function createSearchMcpServer(): McpServer {
     version: '1.0.0',
   });
 
-  registerSearchTools(server);
+  registerToolDefinitions(server, searchToolDefinitions, { domain: 'search' });
 
   return server;
 }
