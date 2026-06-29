@@ -2,7 +2,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { defineTool } from '../../shared/types/toolDefinition.js';
 import { toolError, toolText } from '../../shared/toolResult.js';
 
-const NEWSBLUR_STORIES_URL = 'https://newsblur-worker.withyash.workers.dev/stories';
+const NEWSBLUR_STORIES_URL = 'https://newsblur-worker.withyash.workers.dev/api/stories';
 
 async function handler(): Promise<CallToolResult> {
     let response: Response;
