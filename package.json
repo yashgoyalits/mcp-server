@@ -1,5 +1,5 @@
 {
-  "name": "screener-mcp-server",
+  "name": "mcp-server",
   "version": "1.0.0",
   "description": "Remote MCP server exposing screener stock insights, backed by Cloudflare R2 via the S3-compatible API",
   "type": "module",
