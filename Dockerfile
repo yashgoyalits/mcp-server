@@ -4,7 +4,7 @@
 # need to move off Render, this file is the reason it'll just work.
 
 # ---- Build stage ----
-FROM node:20-slim AS build
+FROM node:22-slim AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ COPY . .
 RUN npm run build
 
 # ---- Runtime stage ----
-FROM node:20-slim AS runtime
+FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./

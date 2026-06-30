@@ -4,7 +4,7 @@
   "description": "Remote MCP server exposing screener stock insights, backed by Cloudflare R2 via the S3-compatible API",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "tsx watch index.ts",
